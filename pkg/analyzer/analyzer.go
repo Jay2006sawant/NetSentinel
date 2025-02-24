@@ -5,16 +5,20 @@ import (
 	"sync"
 	"time"
 
+	networkingv1 "k8s.io/api/networking/v1"
 	"github.com/netsentinel/pkg/ebpf"
+	"github.com/netsentinel/pkg/policy"
 	"github.com/sirupsen/logrus"
 )
 
 // Analyzer processes network traffic events and detects policy violations
 type Analyzer struct {
-	trafficMonitor *ebpf.TrafficMonitor
-	stopCh         chan struct{}
-	wg             sync.WaitGroup
-	log            *logrus.Logger
+	trafficMonitor    *ebpf.TrafficMonitor
+	complianceChecker *policy.ComplianceChecker
+	driftDetector     *policy.DriftDetector
+	stopCh           chan struct{}
+	wg               sync.WaitGroup
+	log              *logrus.Logger
 }
 
 // NewAnalyzer creates a new traffic analyzer
@@ -24,10 +28,15 @@ func NewAnalyzer() (*Analyzer, error) {
 		return nil, err
 	}
 
+	complianceChecker := policy.NewComplianceChecker()
+	driftDetector := policy.NewDriftDetector(complianceChecker)
+
 	return &Analyzer{
-		trafficMonitor: monitor,
-		stopCh:         make(chan struct{}),
-		log:            logrus.New(),
+		trafficMonitor:    monitor,
+		complianceChecker: complianceChecker,
+		driftDetector:     driftDetector,
+		stopCh:           make(chan struct{}),
+		log:              logrus.New(),
 	}, nil
 }
 
@@ -37,8 +46,9 @@ func (a *Analyzer) Start(ctx context.Context) error {
 		return err
 	}
 
-	a.wg.Add(1)
+	a.wg.Add(2)
 	go a.processEvents(ctx)
+	go a.cleanupLoop(ctx)
 
 	return nil
 }
@@ -48,6 +58,21 @@ func (a *Analyzer) Stop() {
 	close(a.stopCh)
 	a.trafficMonitor.Stop()
 	a.wg.Wait()
+}
+
+// AddPolicy adds a NetworkPolicy to the compliance checker
+func (a *Analyzer) AddPolicy(policy *networkingv1.NetworkPolicy) {
+	a.complianceChecker.AddPolicy(policy)
+}
+
+// RemovePolicy removes a NetworkPolicy from the compliance checker
+func (a *Analyzer) RemovePolicy(namespace, name string) {
+	a.complianceChecker.RemovePolicy(namespace, name)
+}
+
+// GetDriftReport returns the current policy drift report
+func (a *Analyzer) GetDriftReport() map[string]interface{} {
+	return a.driftDetector.GetDriftReport()
 }
 
 func (a *Analyzer) processEvents(ctx context.Context) {
@@ -65,10 +90,34 @@ func (a *Analyzer) processEvents(ctx context.Context) {
 	}
 }
 
+func (a *Analyzer) cleanupLoop(ctx context.Context) {
+	defer a.wg.Done()
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		case <-ticker.C:
+			a.driftDetector.Cleanup(1 * time.Hour)
+		}
+	}
+}
+
 func (a *Analyzer) analyzeEvent(event ebpf.TrafficEvent) {
-	// TODO: Implement policy compliance checking
-	// TODO: Implement anomaly detection
-	// TODO: Update metrics
+	// Process the event for policy drift detection
+	a.driftDetector.ProcessEvent(event)
+
+	// Log the event with policy compliance information
+	allowed, reason, err := a.complianceChecker.CheckCompliance(event)
+	if err != nil {
+		a.log.WithError(err).Error("Error checking policy compliance")
+		return
+	}
 
 	a.log.WithFields(logrus.Fields{
 		"source_ip":      event.SourceIP,
@@ -81,5 +130,7 @@ func (a *Analyzer) analyzeEvent(event ebpf.TrafficEvent) {
 		"container_id":   event.ContainerID,
 		"bytes":          event.Bytes,
 		"timestamp":      time.Unix(0, int64(event.Timestamp)),
+		"allowed":        allowed,
+		"reason":         reason,
 	}).Debug("Processing traffic event")
-} 
+}
