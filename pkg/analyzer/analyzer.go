@@ -8,6 +8,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	"github.com/netsentinel/pkg/ebpf"
 	"github.com/netsentinel/pkg/policy"
+	"github.com/netsentinel/pkg/anomaly"
 	"github.com/sirupsen/logrus"
 )
 
@@ -16,6 +17,8 @@ type Analyzer struct {
 	trafficMonitor    *ebpf.TrafficMonitor
 	complianceChecker *policy.ComplianceChecker
 	driftDetector     *policy.DriftDetector
+	anomalyDetector   *anomaly.AnomalyDetector
+	lateralDetector   *anomaly.LateralDetector
 	stopCh           chan struct{}
 	wg               sync.WaitGroup
 	log              *logrus.Logger
@@ -30,11 +33,15 @@ func NewAnalyzer() (*Analyzer, error) {
 
 	complianceChecker := policy.NewComplianceChecker()
 	driftDetector := policy.NewDriftDetector(complianceChecker)
+	anomalyDetector := anomaly.NewAnomalyDetector(nil)
+	lateralDetector := anomaly.NewLateralDetector(nil)
 
 	return &Analyzer{
 		trafficMonitor:    monitor,
 		complianceChecker: complianceChecker,
 		driftDetector:     driftDetector,
+		anomalyDetector:   anomalyDetector,
+		lateralDetector:   lateralDetector,
 		stopCh:           make(chan struct{}),
 		log:              logrus.New(),
 	}, nil
@@ -75,6 +82,16 @@ func (a *Analyzer) GetDriftReport() map[string]interface{} {
 	return a.driftDetector.GetDriftReport()
 }
 
+// GetAnomalyReport returns the current anomaly detection report
+func (a *Analyzer) GetAnomalyReport() map[string]interface{} {
+	return a.anomalyDetector.GetAnomalyReport()
+}
+
+// GetLateralReport returns the current lateral movement report
+func (a *Analyzer) GetLateralReport() map[string]interface{} {
+	return a.lateralDetector.GetLateralReport()
+}
+
 func (a *Analyzer) processEvents(ctx context.Context) {
 	defer a.wg.Done()
 
@@ -104,6 +121,7 @@ func (a *Analyzer) cleanupLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			a.driftDetector.Cleanup(1 * time.Hour)
+			a.lateralDetector.Cleanup(1 * time.Hour)
 		}
 	}
 }
@@ -111,6 +129,12 @@ func (a *Analyzer) cleanupLoop(ctx context.Context) {
 func (a *Analyzer) analyzeEvent(event ebpf.TrafficEvent) {
 	// Process the event for policy drift detection
 	a.driftDetector.ProcessEvent(event)
+
+	// Process the event for anomaly detection
+	a.anomalyDetector.ProcessEvent(event)
+
+	// Process the event for lateral movement detection
+	a.lateralDetector.ProcessEvent(event)
 
 	// Log the event with policy compliance information
 	allowed, reason, err := a.complianceChecker.CheckCompliance(event)
