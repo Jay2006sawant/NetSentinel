@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/netsentinel/pkg/ebpf"
 	"github.com/netsentinel/pkg/policy"
 	"github.com/netsentinel/pkg/anomaly"
+	"github.com/netsentinel/pkg/metrics"
 	"github.com/sirupsen/logrus"
 )
 
@@ -19,13 +21,15 @@ type Analyzer struct {
 	driftDetector     *policy.DriftDetector
 	anomalyDetector   *anomaly.AnomalyDetector
 	lateralDetector   *anomaly.LateralDetector
+	metricsCollector  *metrics.Collector
+	metricsServer     *metrics.Server
 	stopCh           chan struct{}
 	wg               sync.WaitGroup
 	log              *logrus.Logger
 }
 
 // NewAnalyzer creates a new traffic analyzer
-func NewAnalyzer() (*Analyzer, error) {
+func NewAnalyzer(metricsAddr string) (*Analyzer, error) {
 	monitor, err := ebpf.NewTrafficMonitor()
 	if err != nil {
 		return nil, err
@@ -35,6 +39,8 @@ func NewAnalyzer() (*Analyzer, error) {
 	driftDetector := policy.NewDriftDetector(complianceChecker)
 	anomalyDetector := anomaly.NewAnomalyDetector(nil)
 	lateralDetector := anomaly.NewLateralDetector(nil)
+	metricsCollector := metrics.NewCollector()
+	metricsServer := metrics.NewServer(metricsAddr)
 
 	return &Analyzer{
 		trafficMonitor:    monitor,
@@ -42,6 +48,8 @@ func NewAnalyzer() (*Analyzer, error) {
 		driftDetector:     driftDetector,
 		anomalyDetector:   anomalyDetector,
 		lateralDetector:   lateralDetector,
+		metricsCollector:  metricsCollector,
+		metricsServer:     metricsServer,
 		stopCh:           make(chan struct{}),
 		log:              logrus.New(),
 	}, nil
@@ -53,9 +61,10 @@ func (a *Analyzer) Start(ctx context.Context) error {
 		return err
 	}
 
-	a.wg.Add(2)
+	a.wg.Add(3)
 	go a.processEvents(ctx)
 	go a.cleanupLoop(ctx)
+	go a.startMetricsServer(ctx)
 
 	return nil
 }
@@ -64,6 +73,7 @@ func (a *Analyzer) Start(ctx context.Context) error {
 func (a *Analyzer) Stop() {
 	close(a.stopCh)
 	a.trafficMonitor.Stop()
+	a.metricsServer.Stop(context.Background())
 	a.wg.Wait()
 }
 
@@ -126,7 +136,18 @@ func (a *Analyzer) cleanupLoop(ctx context.Context) {
 	}
 }
 
+func (a *Analyzer) startMetricsServer(ctx context.Context) {
+	defer a.wg.Done()
+
+	if err := a.metricsServer.Start(); err != nil && err != http.ErrServerClosed {
+		a.log.WithError(err).Error("Metrics server error")
+	}
+}
+
 func (a *Analyzer) analyzeEvent(event ebpf.TrafficEvent) {
+	// Record traffic metrics
+	a.metricsCollector.RecordTrafficEvent(event)
+
 	// Process the event for policy drift detection
 	a.driftDetector.ProcessEvent(event)
 
@@ -141,6 +162,23 @@ func (a *Analyzer) analyzeEvent(event ebpf.TrafficEvent) {
 	if err != nil {
 		a.log.WithError(err).Error("Error checking policy compliance")
 		return
+	}
+
+	// Record policy compliance metrics
+	a.metricsCollector.RecordPolicyCompliance(
+		event.PodNamespace,
+		event.PodName,
+		"network-policy",
+		allowed,
+	)
+
+	if !allowed {
+		a.metricsCollector.RecordPolicyViolation(
+			event.PodNamespace,
+			event.PodName,
+			"network-policy",
+			reason,
+		)
 	}
 
 	a.log.WithFields(logrus.Fields{
