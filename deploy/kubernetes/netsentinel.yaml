@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: netsentinel
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: netsentinel
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: netsentinel
+subjects:
+  - kind: ServiceAccount
+    name: netsentinel
+    namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: netsentinel
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netsentinel
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: netsentinel
+  template:
+    metadata:
+      labels:
+        app: netsentinel
+    spec:
+      serviceAccountName: netsentinel
+      containers:
+        - name: netsentinel
+          image: netsentinel:latest
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true  # Required for eBPF
+            capabilities:
+              add:
+                - NET_ADMIN
+                - SYS_ADMIN
+          ports:
+            - name: metrics
+              containerPort: 9090
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          volumeMounts:
+            - name: bpf
+              mountPath: /sys/fs/bpf
+            - name: config
+              mountPath: /etc/netsentinel
+      volumes:
+        - name: bpf
+          hostPath:
+            path: /sys/fs/bpf
+        - name: config
+          configMap:
+            name: netsentinel-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netsentinel
+  namespace: monitoring
+spec:
+  selector:
+    app: netsentinel
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netsentinel-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    metrics:
+      enabled: true
+      port: 9090
+    policy:
+      drift:
+        max_age: 24h
+        cleanup_interval: 1h
+    anomaly:
+      detector:
+        window: 1h
+        min_samples: 100
+        thresholds:
+          traffic_volume: 2.0
+          connection_rate: 2.0
+      lateral:
+        min_connections: 5
+        analysis_window: 1h
+        rate_threshold: 10 
