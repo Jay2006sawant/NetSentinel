@@ -1,55 +1,139 @@
 # NetSentinel
 
-NetSentinel is a Kubernetes NetworkPolicy monitoring and enforcement tool that provides real-time visibility into pod traffic and policy compliance using eBPF and flow export technologies.
+NetSentinel is a Kubernetes-native network security monitoring and policy enforcement tool that provides real-time visibility into network traffic, detects policy violations, and identifies potential security threats.
 
 ## Features
 
-- Real-time monitoring of Kubernetes NetworkPolicy resources
-- Pod traffic analysis using eBPF
-- Network policy drift detection
-- Anomaly detection for lateral movement
-- Prometheus metrics and Grafana dashboards
-- Flow export integration (Antrea/IPFIX)
-
-## Architecture
-
-NetSentinel consists of several components:
-- Policy Controller: Monitors NetworkPolicy resources
-- Traffic Analyzer: Collects pod traffic data using eBPF
-- Drift Detector: Analyzes policy compliance
-- Anomaly Detector: Identifies suspicious network patterns
-- Metrics Exporter: Exposes Prometheus metrics
+- **Network Policy Compliance**: Monitor and enforce Kubernetes NetworkPolicy compliance
+- **Policy Drift Detection**: Detect deviations from defined network policies
+- **Anomaly Detection**: Identify suspicious network patterns and traffic anomalies
+- **Lateral Movement Detection**: Track and analyze pod-to-pod communication
+- **Metrics & Monitoring**: Prometheus metrics and Grafana dashboards
+- **Alerting**: Configurable alerts for security events
 
 ## Prerequisites
 
 - Kubernetes cluster (v1.19+)
-- Go 1.21+
-- eBPF support in kernel
-- Prometheus and Grafana (for metrics visualization)
+- eBPF support in the kernel
+- Helm 3.x
+- kubectl configured
 
-## Installation
+## Quick Start
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/netsentinel.git
+1. Add the NetSentinel Helm repository:
+   ```bash
+   helm repo add netsentinel https://netsentinel.github.io/charts
+   helm repo update
+   ```
 
-# Build the project
-make build
+2. Install NetSentinel:
+   ```bash
+   helm install netsentinel netsentinel/netsentinel \
+     --namespace monitoring \
+     --create-namespace
+   ```
 
-# Deploy to Kubernetes
-kubectl apply -f deploy/
+3. Access the dashboards:
+   - Grafana: `http://localhost:3000`
+   - Prometheus: `http://localhost:9090`
+   - Alertmanager: `http://localhost:9093`
+
+## Configuration
+
+### NetSentinel Configuration
+
+```yaml
+metrics:
+  enabled: true
+  port: 9090
+
+policy:
+  drift:
+    max_age: 24h
+    cleanup_interval: 1h
+
+anomaly:
+  detector:
+    window: 1h
+    min_samples: 100
+    thresholds:
+      traffic_volume: 2.0
+      connection_rate: 2.0
+  lateral:
+    min_connections: 5
+    analysis_window: 1h
+    rate_threshold: 10
 ```
 
-## Usage
+### Alerting Configuration
 
-```bash
-# Start the controller
-./netsentinel controller
-
-# Start the analyzer
-./netsentinel analyzer
+Configure alert receivers in `alertmanager.yml`:
+```yaml
+receivers:
+  - name: 'slack-notifications'
+    slack_configs:
+      - api_url: 'YOUR_SLACK_WEBHOOK'
+        channel: '#network-alerts'
+  - name: 'pagerduty-critical'
+    pagerduty_configs:
+      - service_key: 'YOUR_PAGERDUTY_KEY'
 ```
+
+## Architecture
+
+NetSentinel consists of several components:
+
+1. **Core Components**:
+   - Policy Compliance Checker
+   - Drift Detector
+   - Anomaly Detector
+   - Lateral Movement Detector
+
+2. **Monitoring Stack**:
+   - Prometheus for metrics collection
+   - Grafana for visualization
+   - Alertmanager for alert routing
+
+3. **eBPF Components**:
+   - Traffic Monitor
+   - Packet Analysis
+
+## Security
+
+NetSentinel requires privileged access to the host network for eBPF functionality. The following security measures are implemented:
+
+- RBAC with least privilege
+- Network policy isolation
+- Secure metrics endpoints
+- Encrypted communication
+
+## Troubleshooting
+
+Common issues and solutions:
+
+1. **eBPF Loading Failed**:
+   - Verify kernel version (4.9+)
+   - Check for eBPF support
+   - Ensure privileged mode is enabled
+
+2. **Metrics Not Showing**:
+   - Check Prometheus configuration
+   - Verify service endpoints
+   - Check network policies
+
+3. **High Resource Usage**:
+   - Adjust sampling rate
+   - Modify retention periods
+   - Scale resources
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
 
 ## License
 
-MIT License 
+Apache License 2.0 
